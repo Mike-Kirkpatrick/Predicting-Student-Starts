@@ -1,0 +1,319 @@
+---
+title: "Predicting Student Starts"
+author: "Mike Kirkpatrick"
+date: "May 17, 2018"
+output: html_document
+---
+
+```{r import data and functions, include=FALSE}
+knitr::opts_chunk$set(fig.width=6, fig.height=4, fig.align = "center") 
+
+origin <- "C:/Users/mkirkpatrick/National University/Precision Institute - Documents/Data Science/Modeling/Student Starts/Saved Objects/"
+df <- read.csv(paste0(origin,"df.csv"), na.strings="NA", stringsAsFactors=TRUE)
+rawData <- read.csv(paste0(origin,"rawData.csv"), na.strings="NA", stringsAsFactors=TRUE)
+```
+
+# 1. Introduction
+This report serves as a broad overview of the analyses.  Ommissions are noted where appropriate and further details can be incorporated upon request.
+
+Within the student lifecycle (see figure 1), potential students are first exposed to marketing and recruiting efforts.  Then they are admitted to the University.  A student is considered to have "started" once they take their first class.  **The goal of this analysis was to predict which student would start at National University based on only information available within 7 days of matriculation**.  The input data were therefore limited to marketing data, data obained from the students' application and past ineractions with NU.  Student transfer data (e.g., external GPA, tranfer units, etc.) were not included because students have up to 90 days to submit this information.  That is, transfer data is not available within 7 days of admission so such data could not be used as inputs in a production model.
+
+```{r StudentLifecycle, echo=FALSE, fig.cap="Figure 1. Student Lifecycle"}
+knitr::include_graphics("StudentLifecycle.png")
+```
+
+# 2. Methods
+### 2.1 The Data
+A total of `r ncol(df)` variables were included.  These variables are listed in the table below.  Descriptive statistics for each variable can be found in Appendix A  The outcome variables were `r colnames(df[1])` and `r colnames(df[2])`.  The `r ncol(df) - ncol(df[,1:2])` input variables consisted of only data available within 7 days of student matriculation.  A total of `r nrow(df)` students were included.  These students had matriculation dates between `r min(as.Date(rawData$EFFDT_BEGIN))` and `r max(as.Date(rawData$EFFDT_BEGIN))`.
+
+Variable | Description
+---------|-----------------------------------------------------------------------------
+eventStartYN | Whether or not (Y/N) the student started or did not start
+daysToEvent | number of days between matriculation and event (i.e., Start or Non-start)
+ACAD_CAREER | Academic career level of student
+ACAD_PLAN_TYPE | Academic plan type of student
+ADM_APPL_METHOD | Application method of student
+admitFyQtr | Fiscal Year Quarter of student matriculation date (Q1 = July-Sept)
+age | Student age at matriculation
+appFeeStatus | Application fee status of student at matriculation
+campus | Campus that received the student application
+cancelSum | Total number of previous program cancelations at NU by student
+completionSum | Total number of previous program completions at NU by student
+coursesScheduled | Total courses scheduled within 7 days of student matriculation
+daysToFirstSchedClass | Number of days between student matriculaiton date and first scheduled class (default=380)
+discSum | Total number of previous program discontinuations at NU by student
+ENTITY_GROUP | Entity Group of matriculated student
+ETHNICITY | Student reported ethnicity
+FIN_AID_INTEREST | Whether or not (Y/N) the student indicated interest in finalcial aid on application 
+flagBLK | Whether or not (Y/N) the student had any enrollment blocking "Business Office Lock" service indicator within 7 days of matriculation
+flagBlockEnrl | Whether or not (Y/N) the student had any enrollment blocking service indicators within 7 days of matriculation
+flagCRD | Whether or not (Y/N) the student had an enrollment blocking "Credential Office Lock" service indicator within 7 days of matriculation
+flagHold | Whether or not (Y/N) the student had any enrollment blocking "Hold" service indicator within 7 days of matriculation
+flagLock | Whether or not (Y/N) the student had any enrollment blocking "Lock" service indicator within 7 days of matriculation
+flagREC | Whether or not (Y/N) the student had an enrollment blocking "Registrar's Lock" service indicator within 7 days of matriculation
+marital | Student reported marital status
+military | Student reported military status (categorized)
+nonCA | Whether or not (Y/N) the student indicated they resided outside of CA
+NU_LEAD_SOURCE_ID | Lead source of student (categorized)
+nuCoursesTakenSum | Total number of previous courses taken by student at NU
+sex | Student reported gender
+startYNSum | Total number of previous program starts at NU by student
+||
+
+### 2.2 Algorithms
+The outcome that we were trying to predict is whether or not students would start once admitted.  The outcome values (i.e., "Start" and "Not Start") are distinct classes.  Therefore, classification algorithms were chosen to accomplish this task.
+
+
+Four algorithms were trained and evaluated.  The algorithms included were Cox Proportional-Hazards Regression, Logistic Regression, Extreme Gradient Boost (XGboost) and Random Forest (see table).  
+
+Approach | Algorithm | Description
+-----------------|-------------------------------|-------------------------------------------------------
+Statistical | Cox Proportional-Hazards Regression | Survival model that estimates the probability of a binary event occuring over time
+Machine Learning | Logistic Regression | Linear model that estimates the probability of a binary event occuring
+| | XGBoost | Tree-based ensemble model that implements gradient boosting to predict binary, multi-class and continuous outcomes
+| | Random Forest | Tree-based ensemble model that implements bootstrap aggregation (i.e., "bagging") and random feature subsetting to predict to binary, multi-class and continuous outcomes
+| | |
+
+
+### 2.3 Model Training and Evaluation
+```{r training des, echo=FALSE, comment=NA}
+dftestHAZ <- read.csv(paste0(origin,"dftestHAZ.csv"), na.strings="NA", stringsAsFactors=TRUE)
+dftrainHAZu <- read.csv(paste0(origin,"dftrainHAZunbalanced.csv"), na.strings="NA", stringsAsFactors=TRUE)
+dftrainHAZb <- read.csv(paste0(origin,"dftrainHAZbalanced.csv"), na.strings="NA", stringsAsFactors=TRUE)
+```
+The complete data set was split into two data sets: training and testing.  The training data set contained 70% of the total observations (N=`r nrow(dftrainHAZu)`) and the testing data set contained 30% of the total observations (N=`r nrow(dftestHAZ)`).  The training and testing data sets are considered "unbalanced" with regard to the class variable (i.e., eventStartYN) since the proportion of students that start versus not start is not equal (starts = `r round(mean(dftrainHAZu$eventStartYN)*100,1)`%, non-starts = `r 100-round(mean(dftrainHAZu$eventStartYN)*100,1)`%).  A "balanced" copy of the training data set was created so that the proportion of starts was equal to non-starts.  This was done by simply selecting a random sample of starts.  This process is called class balancing and it often produces favorable results when the goal is to predict the minority class.  Thus, three data sets were created: Unbalanced Training, Balanced Training, and Test.
+
+All 4 algorithms were trained on each of the training data sets, thus producing a total of 8 models (see table below). For the machine learning models, 10-fold cross-validation was implemented during model training, which is not feasible for the Hazard algorithm.  After model training, all 8 of the models were evaluated with the test data set.  The Hazard model requres a time point for prediction.  The max time value for the data set was used, 380 days, which represents the students have the total time possible to start their program.  
+
+The test data are fed through the trained models to produce the models' predictions.  These predictions are then compared to the observed values (i.e., eventStartYN) in the test data.  Predicted versus observed values are compared and various accuracy metrics were calculated for comparison purposes.  It's important to note that all of the trained models were evaluated on the same test data set.  It is also important to note that the trained models have not seen ANY of the observation in the test dataset, thus mimicking how the models would perform once put into a production environment. 
+
+Algorithm | Training Data | Model Name | Test Data
+----------|------------------------|-------------------------|-------
+Cox Proportional Hazard Regression | Balanced | Haz Bal | Test
+Cox Proportional Hazard Regression | Unbalanced | Haz Unbal | Test
+Logistic Regression | Balanced | LR Bal | Test
+Logistic Regression | Unbalanced | LR Unbal | Test
+Random Forest | Balanced | RF Bal | Test
+Random Forest | Unbalanced | RF Unbal | Test
+XGBoost | Balanced | XGB Bal | Test
+XGBoost | Unbalanced | XGB Unbal | Test
+ | | | |
+
+
+# 3. Results
+### 3.1 Modeling Results
+```{r results prep, comment=NA, message=FALSE, warning=FALSE, echo=FALSE}
+results <- read.csv(paste0(origin,"results.csv"), na.strings="NA", stringsAsFactors=TRUE)
+results <- subset(results, select = c(Model, AUC, Accuracy.Non.Starts, Accuracy.Overall))
+results$Average.of.Measures <- rowMeans(results[,c("AUC","Accuracy.Non.Starts","Accuracy.Overall")])
+
+f.plotvarimp <- function(mdel, n){
+  vi <- varImp(mdel)
+  vi <- vi$importance
+  vi$Predictor <- row.names(vi)
+  vi <- vi[order(-vi$Overall),]
+  vi <- vi[1:n,]
+  dotplot(with(vi,reorder(Predictor,Overall)) ~ Overall, data = vi, xlab="Importance", main="Relative Variable Importance")
+}
+varImpN <- 20
+
+f.plot.results <- function(metric, tbl){
+  dotplot( with(tbl,reorder(Model,get(metric))) ~ get(metric),
+           data = tbl,
+           main = metric,
+           xlab = NULL,
+           ylab = "Model")
+}
+
+```
+The results for each model are displayed in the table below, followed by an interpretation of the results for each evaluation measure.  Confusion Matrixes for every model are in Appendix B.  The The measures used for evaluating each model are:
+
+1. AUC: 
+    + "Area Under the Curve" is the primary measure used to evaluate the models since it rewards the model for correct classifications and penalizes the model for incorrect classifications (this is in contrast to Accuracy, which does not penalize for incorrect predictions).  This measure ranges from 0 to 1 and compares the true-positive rate against the false positive rate.
+2. Accuracy.Non-Starts
+    + Accuracy for predicting students that would not start is the secondary measure used to evaluate the models since the goal is to identify students that would not start (these students would require intervention).  This measure ranges from 0 to 1 and is the percentage of non-start students that the model correctly classified.
+3. Accuracy.Overall
+    + Overall Accuracy is the tertiary measure used to evaluate the models because it does not penalize for incorrect classifications and it does not empasize the importance of predicting non-start students.  This measure ranges from 0 to 1 and is the percentage of start and non-starts that the model correctly classified. 
+4. Average of Measures
+    + Average of Measures is composite measure that, as the name suggests, is the average of the 3 preceding measures.  This measure was included to simultaneously compare the performance of each model across all measures.
+
+
+```{r results table, echo=FALSE, warning=FALSE, comment=NA}
+library(knitr)
+kable(results, digits = 3)
+```
+
+All 8 models had considerably high AUC values.  XGBoost consistently had the highest AUC, followed by Logistic Regression, Random Forest and finally Cox-Proportional Hazards Regression.  The AUC values were very similar across all models.  In fact, all AUC values were within 1% of each other, ranging from `r round(min(results$AUC),3)` to `r round(max(results$AUC),3)`.  Therefore, AUC is not the best measure for distinguishes which model performed best.
+
+```{r results AUC, echo=FALSE, warning=FALSE, comment=NA}
+library(lattice)
+f.plot.results("AUC", results)
+```
+
+Accuracy for non-starts is the measure that differentiates model performance very well.  Values ranged from `r round(min(results$Accuracy.Non.Starts),3)` to `r round(max(results$Accuracy.Non.Starts),3)`  The machine learning algorithms that were trained on the balanced data sets performed much better than all other models.  XGBoost on the balanced data set had the highest AUC (`r round(subset(results, Model == "XGB Bal", select = Accuracy.Non.Starts),3)`) followed by Logistic Regresstion (`r round(subset(results, Model == "LR Bal", select = Accuracy.Non.Starts),3)`) and Random Forest (`r round(subset(results, Model == "RF Bal", select = Accuracy.Non.Starts),3)`).  All of the unbalanced datasets did considerably worse.
+
+```{r results Accuracy.Non.Starts, echo=FALSE, warning=FALSE, comment=NA}
+f.plot.results("Accuracy.Non.Starts", results)
+```
+
+All 8 models had respectively high accuracy values, ranging from `r round(min(results$Accuracy.Overall),3)` to `r round(max(results$Accuracy.Overall),3)`.  XGBoost and Logistic Regression trained on unbalanced data sets were the only models to exceed 73%.   
+
+```{r results Accuracy.Overall, echo=FALSE, warning=FALSE, comment=NA}
+f.plot.results("Accuracy.Overall", results)
+```
+
+Finally, the average values of AUC, Accuracy.Non.Start and Accuracy.Overall is plotted below.  Values ranged from `r round(min(results$Average.of.Measures),3)` to `r round(max(results$Average.of.Measures),3)` and the machine learning models that were trained on the balanced data sets performed the best.   Yet again, XGBoost outperformed all other models followed by logistic regression. 
+```{r results Average.Of.Measures, echo=FALSE, warning=FALSE, comment=NA}
+f.plot.results("Average.of.Measures", results)
+```
+
+
+### 3.2 Variable Importance
+```{r variable importance prep, echo=FALSE, warning=FALSE, comment=NA}
+load(paste0(origin,"xgbb.rda"))
+load(paste0(origin,"lrb.rda"))
+load(paste0(origin,"rfb.rda"))
+load(paste0(origin,"hazu.rda"))
+
+f.plotVarImpML <- function(mdel, n, title){
+  vi <- varImp(mdel)
+  vi <- vi$importance
+  vi$Predictor <- row.names(vi)
+  vi <- vi[order(-vi$Overall),]
+  vi <- vi[1:n,]
+  dotplot(with(vi,reorder(Predictor,Overall)) ~ Overall, data = vi, xlab="Importance", main=paste("Relative Variable Importance for",title))
+}
+
+f.plotVarImpHAZ <- function(mdel, n, title){
+  s <- summary(mdel)
+  vi <- data.frame(s$coefficients)
+  vi$z.abs <- abs(vi$z)
+  vi$Predictor <- row.names(vi)
+  vi$Overall = (vi$z.abs-min(vi$z.abs))/(max(vi$z.abs)-min(vi$z.abs))*100
+  vi <- vi[order(-vi$Overall),]
+  vi <- vi[1:n,]
+  dotplot(with(vi,reorder(Predictor,Overall)) ~ Overall, data = vi, xlab="Importance", main=paste("Variable Importance for",title))
+}
+
+varImpN <- 20
+
+st.err <- function(x, na.rm=FALSE) {
+  if(na.rm==TRUE) x <- na.omit(x)
+  sd(x)/sqrt(length(x))
+}
+
+f.plotContIVs <- function(df, IV){
+  a <- aggregate(eventStartYN ~ get(IV), data = df, mean)
+  colnames(a) <- c("IV", "eventStartYN")
+  a$se <- aggregate(eventStartYN ~ get(IV), data = p, st.err)[,2]
+  a$upper <- a$eventStartYN + a$se
+  a$lower <- a$eventStartYN - a$se
+  a <- a[complete.cases(a), ]
+  xyplot(upper + eventStartYN + lower ~ IV, data = a, type="l", col=c("gray","red"), main=paste("Start Rate by",IV), ylab="Start Rate", xlab=IV)
+  #xyplot(eventStartYN ~ IV, data = a, type="l", main=paste("Start Rate by",IV), ylab="Start Rate", xlab=IV)
+}
+```
+
+Variable importance was calculated for the best performing model from each of the 4 algorithms.  The top `r varImpN` most important variables for each model are plotted below.  The relative importance of variables was incredibly consistent across all 4 models.  Across every model, daysToFirstSchedClass was by far the most important variable.  The second most important variable across every model was coursesScheduled.  The third most important variable across all 4 models was age.  However, age was relatively not as important as daysToFirstSchedClass or coursesScheduled.  Looking across all 4 models, it is clear that daysToFirstSchedClass and coursesScheduled were the driving variables behind each models' predictive power.  These 3 variables are interpreted in the next section.
+
+```{r variable importance plots, comment=NA, message=FALSE, warning=FALSE, echo=FALSE, fig.width=8, fig.height=5}
+library(caret)
+library(survival)
+f.plotVarImpML(xgb.b, varImpN, "Balanced XGBoost")
+f.plotVarImpML(lr.b, varImpN, "Balanced Logistic Regression")
+f.plotVarImpML(rf.b, varImpN, "Balanced Random Forest")
+f.plotVarImpHAZ(haz.u, varImpN, "Balanced Cox-Proportional Hazards Regression")
+```
+
+### 3.3 Independent Effects
+The average start rate for daysToFirstSchedClass, coursesScheduled and age are plotted below.  These 3 variables were the most important variables for all of the top algorithms.  The red line in each plot is the average start rate and the gray lines are the standard errors.  It is desireable to have small standard errors.  That is, the closer the gray line is to the red line, the less error/variance there is.
+
+The variable daysToFirstSchedClass was by far the most important variable across all models.  This variable represents how many days until the students' first scheduled class, measured 7 days after matriculation.  If a student did not have a class scheduled at this time, the value of 380 was substituted.  Although the plot is somewhat noisy, there is more-or-less a negative relationship.  That is, the further away the students first scheduled class is, the less likely they are to start.
+
+```{r daysToFirstSchedClass plot, comment=NA, message=FALSE, warning=FALSE, echo=FALSE}
+p <- subset(df, select = c(eventStartYN, daysToFirstSchedClass, coursesScheduled, age))
+
+library(lattice)
+f.plotContIVs(p, "daysToFirstSchedClass")
+```
+
+The variable coursesScheduled was the second most important variable across all models.  This variable represents how many courses the student had scheduled as of 7 days after matriculation.  If a student did not have any classes scheduled at this time, the value of 0 was substituted.  The relationship between start rate and coursesScheduled is positive and very consistent (small standard errors).  That is, the more courses a student has scheduled, the more likely they are to start.
+
+```{r coursesScheduled plot, comment=NA, message=FALSE, warning=FALSE, echo=FALSE}
+f.plotContIVs(p, "coursesScheduled")
+```
+
+The variable age was the third most important variable across all models, although, it's influence was not as strong as daysToFirstSchedClass or coursesScheduled.  This variable represents how old (in years) the student was as of 7 days after matriculation.  The relationship between start rate and age is somewhat parabolic.  That is, as age increases from roughly 18 to 22, the start rate increases.  Then, from roughly 22 and greater, the start rate has a steady decline.  Overall, the older a student is, the less likely they are to start. 
+
+```{r age plot, comment=NA, message=FALSE, warning=FALSE, echo=FALSE}
+f.plotContIVs(p, "age")
+```
+
+# 4. Conclusions
+The goal of this analysis was to predict which student would start at National University based on only information available within 7 days of matriculation.  Overall, all models did surprisingly well.  All had high AUC values around 0.80 and accuracy levels above 0.70.  
+
+The modeling results indicate that XGBoost was superior across all evaluation measures.  XGBoost was the best performing algorithm in every instance.  Logistic Regression was the second best performing algorithm across every evaluation measure.  Logistic Regression consistenly performed only slightly worse than XGBoost.  **Despite XGBoost outperforming all other algorithms, Logistic Regression would be chosen as the model to put into a production environment because Logistic Regression provides detailed explanations about its predictions whereas XGBoost does not supply as detailed explanations**.  Specifically, the Logistic Regression model trained on the balanced data set would be the final model since it had very high AUC while also having exceptionally high accuracy when predicting non-start students. 
+
+Variable importance indicates that daysToFirstSchedClass and coursesScheduled are by the most influencial variables for predicting which students will start. Should we want to put this model into production, it would be worthwhile to investigate how much the other variables impact model performance and potentially exclude some of them.  It also might be beneficial to see if interaction terms improve model performance.
+
+# Appendix
+### Appendix A: Descriptive Statistics 
+```{r descriptive stats, echo=FALSE, comment=NA}
+summary(df)
+```
+
+### Appendix B: Confusion Matrixes
+Hazard Balanced
+```{r echo=FALSE, comment=NA}
+load(paste0(origin,"res.haz.b.rda"))
+load(paste0(origin,"res.haz.u.rda"))
+load(paste0(origin,"res.lr.b.rda"))
+load(paste0(origin,"res.lr.u.rda"))
+load(paste0(origin,"res.rf.b.rda"))
+load(paste0(origin,"res.rf.u.rda"))
+load(paste0(origin,"res.xgb.b.rda"))
+load(paste0(origin,"res.xgb.u.rda"))
+
+res.haz.b$cm
+```
+
+Hazard Unbalanced
+```{r echo=FALSE, comment=NA}
+res.haz.u$cm
+```
+
+Logistic Regression Balanced
+```{r echo=FALSE, comment=NA}
+res.lr.b$cm
+```
+
+Logistic Regression Unbalanced
+```{r echo=FALSE, comment=NA}
+res.lr.u$cm
+```
+
+Random Forest Balanced
+```{r echo=FALSE, comment=NA}
+res.rf.b$cm
+```
+
+Random Forest Unbalanced
+```{r echo=FALSE, comment=NA}
+res.rf.u$cm
+```
+
+XGBoost Balanced
+```{r echo=FALSE, comment=NA}
+res.xgb.b$cm
+```
+
+XGBoost Unbalanced
+```{r echo=FALSE, comment=NA}
+res.xgb.u$cm
+```
+
+
+
+
+
+
